@@ -3777,4 +3777,68 @@ assert(r == e)
 r = parse(s)
 assert(r == e)
 
+s = [===[
+local t = {2}
+local x = t[ 1 --[[F:Cls.C1:]] ]
+]===]
+e = [=[
+test.lua:2:22: syntax error, malformed inline annotation (expected --[[(F|E|C):Type(?:Field)]])
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+local y = 3 --[[E:Name.N1:]]
+]===]
+e = [=[
+test.lua:1:19: syntax error, malformed inline annotation (expected --[[(F|E|C):Type(?:Field)]])
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+local z = 4 --[[C:3]] 
+]===]
+e = [=[
+test.lua:1:19: syntax error, malformed inline annotation (expected --[[(F|E|C):Type(?:Field)]])
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+local t = {2}
+local x = t[ 1 --[[F:Cls.C1:X]] ]
+local y = 3 --[[E:Name.N1:Y]]
+local z = 4 --[[C:Name.N2]] 
+
+-- Test whitespace variations
+local a = 1 --[[F:Spacey.Type:FieldName]]
+local b = 2 --[[E:Type.With.Dots:Value_With_Underscores]]
+local c = 3 --[[C:Type_With_Underscores]]
+
+-- Test in different contexts
+local function test --[[C:Func]] ()
+  local x = 1 --[[F:Func.Scope:LocalVar]]
+  return x --[[E:Func.Return:Value]]
+end
+
+-- Test in table constructor
+local tbl = {
+  field1 = "value" --[[F:Table.Field:Value]],
+  [2] = true --[[F:Table.Index:Boolean]]
+}
+
+-- Test in function call
+print("test" --[[F:Func.Arg:String]])
+]===]
+e = [=[
+{ `Local{ { `Id "t" }, { `Table{ `Number "2" } } }, `Local{ { `Id "x" }, { `Index{ `Id "t", `Number "1" : anno = { "F", "Cls.C1", "X" } } } }, `Local{ { `Id "y" }, { `Number "3" : anno = { "E", "Name.N1", "Y" } } }, `Local{ { `Id "z" }, { `Number "4" : anno = { "C", "Name.N2", "nil" } } }, `Local{ { `Id "a" }, { `Number "1" : anno = { "F", "Spacey.Type", "FieldName" } } }, `Local{ { `Id "b" }, { `Number "2" : anno = { "E", "Type.With.Dots", "Value_With_Underscores" } } }, `Local{ { `Id "c" }, { `Number "3" : anno = { "C", "Type_With_Underscores", "nil" } } }, `Localrec{ { `Id "test" : anno = { "C", "Func", "nil" } }, { `Function{ {  }, { `Local{ { `Id "x" }, { `Number "1" : anno = { "F", "Func.Scope", "LocalVar" } } }, `Return{ `Id "x" : anno = { "E", "Func.Return", "Value" } } } } } }, `Local{ { `Id "tbl" }, { `Table{ `Pair{ `String "field1", `String "value" : anno = { "F", "Table.Field", "Value" } }, `Pair{ `Number "2", `Boolean "true" } } } }, `Call{ `Id "print", `String "test" : anno = { "F", "Func.Arg", "String" } } }
+]=]
+
+r = parse(s)
+assert(r == e)
+
 print("OK")

@@ -154,6 +154,7 @@ local labels = {
   { "ErrCBraceUEsc", "expected '}' after the code point" },
   { "ErrEscSeq", "invalid escape sequence" },
   { "ErrCloseLStr", "unclosed long string" },
+  { "ErrAnnoMalformed", "malformed inline annotation (expected --[[(F|E|C):Type(?:Field)]])"}
 }
 
 local function throw(label)
@@ -265,6 +266,33 @@ local function makeIndexOrCall (t1, t2)
   return { tag = "Index", pos = t1.pos, end_pos = t2.end_pos, [1] = t1, [2] = t2[1] }
 end
 
+-- Project Annotation Validation
+local OptSpace = space^0
+local AnnoType = S"FEC"
+local AnnoFullName = (alpha + P"_") * (alnum + P"_")^0 * (P"." * (alpha + P"_") * (alnum + P"_")^0)^0
+local AnnoSimpleId = (alpha + P"_") * (alnum + P"_")^0
+
+-- Only attempt if prefix matches --[[ <F|E|C> :    (lookahead-ish by structuring the pattern)
+local AnnoField = P"--[[" * C(P"F:") * expect(C(AnnoFullName) * P":" * C(AnnoSimpleId) * P"]]", "AnnoMalformed")
+local AnnoEnum = P"--[[" * C(P"E:") * expect(C(AnnoFullName) * P":" * C(AnnoSimpleId) * P"]]", "AnnoMalformed")
+local AnnoConst = P"--[[" * C(P"C:") * expect(C(AnnoFullName) * P"]]", "AnnoMalformed")
+local AnnoBase = (AnnoField + AnnoEnum + AnnoConst)
+
+local Annotation = tagC("InlineAnno", AnnoBase)
+
+local function attachAnno(node, anno, _)
+  if not anno then return node end
+  node.anno = {
+    kind = anno[1]:sub(1, 1),
+    type = anno[2],
+    name = anno[3],
+    pos = anno.pos,
+    end_pos = anno.end_pos,
+    -- raw optional: subject:sub(anno.pos, anno.end_pos)
+  }
+  return node
+end
+
 -- grammar
 local G = { V"Lua",
   Lua      = V"Shebang"^-1 * V"Skip" * V"Block" * expect(P(-1), "Extra");
@@ -331,8 +359,8 @@ local G = { V"Lua",
               + V"PowExpr";
   PowExpr     = V"SimpleExpr" * (V"PowOp" * expect(V"UnaryExpr", "PowExpr"))^-1 / binaryOp;
 
-  SimpleExpr = tagC("Number", V"Number")
-             + tagC("String", V"String")
+  SimpleExpr = V"Number"
+             + V"String"
              + tagC("Nil", kw("nil"))
              + tagC("Boolean", kw("false") * Cc(false))
              + tagC("Boolean", kw("true") * Cc(true))
@@ -354,7 +382,7 @@ local G = { V"Lua",
   FuncDef   = kw("function") * V"FuncBody";
   FuncArgs  = sym("(") * commaSep(V"Expr", "ArgList")^-1 * expect(sym(")"), "CParenArgs")
             + V"Table"
-            + tagC("String", V"String");
+            + V"String";
 
   Table      = tagC("Table", sym("{") * V"FieldList"^-1 * expect(sym("}"), "CBraceTable"));
   FieldList  = sepBy(V"Field", V"FieldSep") * V"FieldSep"^-1;
@@ -364,7 +392,6 @@ local G = { V"Lua",
              + V"StrId" * #("=" * -P"=");
   FieldSep   = sym(",") + sym(";");
 
-  Id     = tagC("Id", V"Name");
   StrId  = tagC("String", V"Name");
 
   -- lexer
@@ -373,7 +400,8 @@ local G = { V"Lua",
   Comment  = P"--" * V"LongStr" / function () return end
            + P"--" * (P(1) - P"\n")^0;
 
-  Name      = token(-V"Reserved" * C(V"Ident"));
+  RawName   = -V"Reserved" * C(V"Ident");
+  Name      = token(V"RawName");
   Reserved  = V"Keywords" * -V"IdRest";
   Keywords  = P"and" + "break" + "do" + "elseif" + "else" + "end"
             + "false" + "for" + "function" + "goto" + "if" + "in"
@@ -383,7 +411,7 @@ local G = { V"Lua",
   IdStart   = alpha + P"_";
   IdRest    = alnum + P"_";
 
-  Number   = token((V"Hex" + V"Float" + V"Int") / tonumber);
+  RawNumber = (V"Hex" + V"Float" + V"Int") / tonumber;
   Hex      = (P"0x" + "0X") * expect(xdigit^1, "DigitHex");
   Float    = V"Decimal" * V"Expo"^-1
            + V"Int" * V"Expo";
@@ -392,9 +420,13 @@ local G = { V"Lua",
   Expo     = S"eE" * S"+-"^-1 * expect(digit^1, "DigitExpo");
   Int      = digit^1;
 
-  String    = token(V"ShortStr" + V"LongStr");
+  RawString = V"ShortStr" + V"LongStr";
   ShortStr  = P'"' * Cs((V"EscSeq" + (P(1)-S'"\n'))^0) * expect(P'"', "Quote")
             + P"'" * Cs((V"EscSeq" + (P(1)-S"'\n"))^0) * expect(P"'", "Quote");
+
+  Number = token(tagC("Number", V"RawNumber") * OptSpace * Annotation^-1) / attachAnno;
+  String = token(tagC("String", V"RawString") * OptSpace * Annotation^-1) / attachAnno;
+  Id = token(tagC("Id", V"RawName") * OptSpace * Annotation^-1) / attachAnno;
 
   EscSeq = P"\\" / ""  -- remove backslash
          * ( P"a" / "\a"

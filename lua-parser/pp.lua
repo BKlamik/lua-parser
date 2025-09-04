@@ -60,6 +60,10 @@ function var2str (var)
   local str = "`" .. tag
   if tag == "Id" then -- `Id{ <string> }
     str = str .. " " .. name2str(var[1])
+    if (var.anno) then
+      str = str .. " : anno = { " .. name2str(var.anno.kind) .. ", " ..
+        name2str(var.anno.type) .. ", " .. name2str(var.anno.name) .. " }"
+    end
   elseif tag == "Index" then -- `Index{ expr expr }
     str = str .. "{ "
     str = str .. exp2str(var[1]) .. ", "
@@ -126,8 +130,16 @@ function exp2str (exp)
     str = str .. " " .. boolean2str(exp[1])
   elseif tag == "Number" then -- `Number{ <number> }
     str = str .. " " .. number2str(exp[1])
+    if (exp.anno) then
+      str = str .. " : anno = { " .. name2str(exp.anno.kind) .. ", " ..
+        name2str(exp.anno.type) .. ", " .. name2str(exp.anno.name) .. " }"
+    end
   elseif tag == "String" then -- `String{ <string> }
     str = str .. " " .. string2str(exp[1])
+    if (exp.anno) then
+      str = str .. " : anno = { " .. name2str(exp.anno.kind) .. ", " ..
+        name2str(exp.anno.type) .. ", " .. name2str(exp.anno.name) .. " }"
+    end
   elseif tag == "Function" then -- `Function{ { `Id{ <string> }* `Dots? } block }
     str = str .. "{ "
     str = str .. parlist2str(exp[1]) .. ", "
