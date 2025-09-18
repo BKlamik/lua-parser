@@ -3809,9 +3809,33 @@ r = parse(s)
 assert(r == e)
 
 s = [===[
+---@class Cls.C1
+---@field public [1] number # X
+
+---@class Spacey.Type
+---@field public [1] number # FieldName
+
+---@class Func.Scope
+---@field [1] number # LocalVar
+
+---@alias Name.N1
+---| 3 # Y
+
+---@alias Type.With.Dots
+---| 2 # Value_With_Underscores
+
+---@alias Func.Return
+---| 2 # Value
+
+---@alias Name.N2 4
+---@alias Type_With_Underscores 3
+---@alias Func "test"
+---@alias Table.Field.Value "value"
+---@alias Func.Arg.Test "test"
+
 local t = {2}
 local x = t[ 1 --[[F:Cls.C1:X]] ]
-local y = 3 --[[E:Name.N1:Y]]
+local y = 3 --[[E:Name.N1:Y]] --[[C:Name.N2]]
 local z = 4 --[[C:Name.N2]] 
 
 -- Test whitespace variations
@@ -3822,20 +3846,160 @@ local c = 3 --[[C:Type_With_Underscores]]
 -- Test in different contexts
 local function test --[[C:Func]] ()
   local x = 1 --[[F:Func.Scope:LocalVar]]
-  return x --[[E:Func.Return:Value]]
+  return 2 --[[E:Func.Return:Value]]
 end
 
 -- Test in table constructor
 local tbl = {
-  field1 = "value" --[[F:Table.Field:Value]],
-  [2] = true --[[F:Table.Index:Boolean]]
+  field1 = "value" --[[C:Table.Field.Value]],
+  [2] = true --[[C:Table.Index.Boolean]]
 }
 
 -- Test in function call
-print("test" --[[F:Func.Arg:String]])
+print("test" --[[C:Func.Arg.Test]])
 ]===]
 e = [=[
-{ `Local{ { `Id "t" }, { `Table{ `Number "2" } } }, `Local{ { `Id "x" }, { `Index{ `Id "t", `Number "1" : anno = { "F", "Cls.C1", "X" } } } }, `Local{ { `Id "y" }, { `Number "3" : anno = { "E", "Name.N1", "Y" } } }, `Local{ { `Id "z" }, { `Number "4" : anno = { "C", "Name.N2", "nil" } } }, `Local{ { `Id "a" }, { `Number "1" : anno = { "F", "Spacey.Type", "FieldName" } } }, `Local{ { `Id "b" }, { `Number "2" : anno = { "E", "Type.With.Dots", "Value_With_Underscores" } } }, `Local{ { `Id "c" }, { `Number "3" : anno = { "C", "Type_With_Underscores", "nil" } } }, `Localrec{ { `Id "test" : anno = { "C", "Func", "nil" } }, { `Function{ {  }, { `Local{ { `Id "x" }, { `Number "1" : anno = { "F", "Func.Scope", "LocalVar" } } }, `Return{ `Id "x" : anno = { "E", "Func.Return", "Value" } } } } } }, `Local{ { `Id "tbl" }, { `Table{ `Pair{ `String "field1", `String "value" : anno = { "F", "Table.Field", "Value" } }, `Pair{ `Number "2", `Boolean "true" } } } }, `Call{ `Id "print", `String "test" : anno = { "F", "Func.Arg", "String" } } }
+{ `Local{ { `Id "t" }, { `Table{ `Number "2" } } }, `Local{ { `Id "x" }, { `Index{ `Id "t", `Number "1" : anno = { "F", "Cls.C1", "X" } } } }, `Local{ { `Id "y" }, { `Number "3" : anno = { "E", "Name.N1", "Y" } } }, `Local{ { `Id "z" }, { `Number "4" : anno = { "C", "Name.N2", "nil" } } }, `Local{ { `Id "a" }, { `Number "1" : anno = { "F", "Spacey.Type", "FieldName" } } }, `Local{ { `Id "b" }, { `Number "2" : anno = { "E", "Type.With.Dots", "Value_With_Underscores" } } }, `Local{ { `Id "c" }, { `Number "3" : anno = { "C", "Type_With_Underscores", "nil" } } }, `Localrec{ { `Id "test" : anno = { "C", "Func", "nil" } }, { `Function{ {  }, { `Local{ { `Id "x" }, { `Number "1" : anno = { "F", "Func.Scope", "LocalVar" } } }, `Return{ `Number "2" : anno = { "E", "Func.Return", "Value" } } } } } }, `Local{ { `Id "tbl" }, { `Table{ `Pair{ `String "field1", `String "value" : anno = { "C", "Table.Field.Value", "nil" } }, `Pair{ `Number "2", `Boolean "true" } } } }, `Call{ `Id "print", `String "test" : anno = { "C", "Func.Arg.Test", "nil" } } } : cats = { classes = { ["Cls.C1"] = { fields = { [1] = { indexName = "X", luaType = "number", pos = 18, end_pos = 50 } }, pos = 1, end_pos = 18, validate = true }, ["Func.Scope"] = { fields = { [1] = { indexName = "LocalVar", luaType = "number", pos = 135, end_pos = 167 } }, pos = 114, end_pos = 135, validate = true }, ["Spacey.Type"] = { fields = { [1] = { indexName = "FieldName", luaType = "number", pos = 73, end_pos = 113 } }, pos = 51, end_pos = 73, validate = true } }, aliases = { ["Func.Return"] = { values = { ["Value"] = { value = "2", pos = 278, end_pos = 293 } }, pos = 256, end_pos = 278 }, ["Name.N1"] = { values = { ["Y"] = { value = "3", pos = 186, end_pos = 197 } }, pos = 168, end_pos = 186 }, ["Type.With.Dots"] = { values = { ["Value_With_Underscores"] = { value = "2", pos = 223, end_pos = 255 } }, pos = 198, end_pos = 223 } }, constants = { ["Func"] = { value = ""test"", pos = 348, end_pos = 370 }, ["Func.Arg.Test"] = { value = ""test"", pos = 406, end_pos = 437 }, ["Name.N2"] = { value = "4", pos = 294, end_pos = 314 }, ["Table.Field.Value"] = { value = ""value"", pos = 370, end_pos = 406 }, ["Type_With_Underscores"] = { value = "3", pos = 314, end_pos = 348 } } }
+]=]
+
+r = parse(s)
+assert(r == e)
+
+-- LuaCATS capture tests
+print("> testing LuaCATS capture...")
+
+-- Test 1: Class with fields
+s = [===[
+---@class My.Point
+---@field public [1] table<number, fun(a: string[]?, b: string|number): boolean, integer> # w
+---@field protected [2] number # x
+---@field private [3] number # -
+---@field [4] number # 
+---@field [5] number #
+---@field [6] number 
+---@field foo number # bar
+
+---@alias My.Num 9 # Nine
+---@alias My.Enum
+---| 5 # Five
+---| 6 # Six
+---| 7 # Seven
+
+---@field [5] string # ShouldIgnore
+---| 8 # ShouldIgnoreToo
+
+local a = 9 --[[C:My.Num]]
+local b = 5 --[[E:My.Enum:Five]]
+local c = 6 --[[E:My.Enum:Six]]
+local d = 7 --[[E:My.Enum:Seven]]
+]===]
+
+e = [=[
+{ `Local{ { `Id "a" }, { `Number "9" : anno = { "C", "My.Num", "nil" } } }, `Local{ { `Id "b" }, { `Number "5" : anno = { "E", "My.Enum", "Five" } } }, `Local{ { `Id "c" }, { `Number "6" : anno = { "E", "My.Enum", "Six" } } }, `Local{ { `Id "d" }, { `Number "7" : anno = { "E", "My.Enum", "Seven" } } } } : cats = { classes = { ["My.Point"] = { fields = { [1] = { indexName = "w", luaType = "table<number, fun(a: string[]?, b: string|number): boolean, integer>", pos = 20, end_pos = 114 }, [2] = { indexName = "x", luaType = "number", pos = 114, end_pos = 149 }, [3] = { luaType = "number", pos = 149, end_pos = 182 }, [4] = { luaType = "number", pos = 182, end_pos = 206 }, [5] = { luaType = "number", pos = 206, end_pos = 229 }, [6] = { luaType = "number", pos = 229, end_pos = 251 }, ["foo"] = { luaType = "number", pos = 251, end_pos = 278 } }, pos = 1, end_pos = 20, validate = false } }, aliases = { ["My.Enum"] = { values = { ["Five"] = { value = "5", pos = 323, end_pos = 337 }, ["Seven"] = { value = "7", pos = 350, end_pos = 365 }, ["Six"] = { value = "6", pos = 337, end_pos = 350 } }, pos = 305, end_pos = 323 } }, constants = { ["My.Num"] = { value = "9", pos = 279, end_pos = 305 } } }
+]=]
+
+r = parse(s)
+assert(r == e)
+
+-- Test 2: Invalid inline annotations
+s = [===[
+local n = 3 --[[C:No.Such.Type]]
+]===]
+
+e = [=[
+test.lua:1:13: syntax error, invalid inline annotation 'C', alias type name 'No.Such.Type' does not exist
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+---@alias My.Num 9
+local n = 3 --[[C:My.Num]]
+]===]
+
+e = [=[
+test.lua:2:13: syntax error, invalid inline annotation 'C', 'My.Num' alias type name value '9' does not match the inline annotated value of '3'
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+local e = 5 --[[E:No.Such.Enum:Val]]
+]===]
+
+e = [=[
+test.lua:1:13: syntax error, invalid inline annotation 'E', alias type name 'No.Such.Enum' does not exist
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+---@alias My.Enum
+---| 1 # One
+
+local x = 2 --[[E:My.Enum:Two]]
+]===]
+
+e = [=[
+test.lua:4:13: syntax error, invalid inline annotation 'E', 'My.Enum' alias index value name 'Two' does not exist
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+---@alias My.Enum
+---| 1 # One
+
+local x = 2 --[[E:My.Enum:One]]
+]===]
+
+e = [=[
+test.lua:4:13: syntax error, invalid inline annotation 'E', 'My.Enum' alias index value name 'One' value '1' does not match the inline annotated value of '2'
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+local f = 1 --[[F:No.Such.Class:field]]
+]===]
+
+e = [=[
+test.lua:1:13: syntax error, invalid inline annotation 'F', class type name 'No.Such.Class' does not exist
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+---@class My.Class
+---@field [1] number # id
+
+local t = {}
+local x = t[ 2 --[[F:My.Class:invalid]] ] 
+]===]
+
+e = [=[
+test.lua:5:16: syntax error, invalid inline annotation 'F', 'My.Class' class index field name 'invalid' does not exist
+]=]
+
+r = parse(s)
+assert(r == e)
+
+s = [===[
+---@class My.Class
+---@field [1] number # id
+
+local t = {}
+local x = t[ 2 --[[F:My.Class:id]] ] 
+]===]
+
+e = [=[
+test.lua:5:16: syntax error, invalid inline annotation 'F', 'My.Class' class index field name 'id' value '1' does not match the inline annotated value of '2'
 ]=]
 
 r = parse(s)

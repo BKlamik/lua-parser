@@ -16,6 +16,93 @@ local function syntaxerror (errorinfo, pos, msg)
   return string.format(error_msg, errorinfo.filename, l, c, msg)
 end
 
+local function validate_inline_anno(env, node)
+  local a = node.anno
+  if not a then return true end
+
+  if a.kind == "F" then
+    local class = env.cats.classes[a.type]
+    if not class then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'F', class type name '" .. a.type .. "' does not exist"
+      )
+    end
+
+    local fieldKey = class.namedIndexFields[a.name]
+    if not fieldKey then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'F', '" .. a.type .. "' class index field name '" .. a.name .. "' does not exist"
+      )
+    end
+
+    if tostring(fieldKey) ~= tostring(node[1]) then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        ("invalid inline annotation 'F', '" .. a.type .. "' class index field name '" .. a.name .. "' value '" ..
+          tostring(fieldKey) .. "' does not match the inline annotated value of '" .. tostring(node[1]) .. "'"
+        )
+      )
+    end
+  elseif a.kind == "E" then
+    local alias = env.cats.aliases[a.type]
+    if not alias then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'E', alias type name '" .. a.type .. "' does not exist"
+      )
+    end
+
+    local value = alias.values[a.name]
+    if not value then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'E', '" .. a.type .. "' alias index value name '" .. a.name .. "' does not exist"
+      )
+    end
+
+    if tostring(value.value) ~= tostring(node[1]) then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        ("invalid inline annotation 'E', '" .. a.type .. "' alias index value name '" .. a.name .. "' value '" ..
+          tostring(value.value) .. "' does not match the inline annotated value of '" .. tostring(node[1]) .. "'"
+        )
+      )
+    end
+  elseif a.kind == "C" then
+    local const = env.cats.constants[a.type]
+    if not const then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'C', alias type name '" .. a.type .. "' does not exist"
+      )
+    end
+
+    if (type(node[1]) == "number" and tonumber(const.value) ~= node[1]) or
+      (type(node[1]) == "string" and tostring(const.value) ~= node[1] and
+        tostring(const.value) ~= "'" .. node[1] .. "'" and 
+        tostring(const.value) ~= '"' .. node[1] .. '"'
+      ) then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        ("invalid inline annotation 'C', '" .. a.type .. "' alias type name value '" .. tostring(const.value) ..
+          "' does not match the inline annotated value of '" .. tostring(node[1]) .. "'"
+        )
+      )
+    end
+  end
+  return true
+end
+
 local function exist_label (env, scope, stm)
   local l = stm[1]
   for s=scope, 0, -1 do
@@ -271,9 +358,11 @@ end
 function traverse_var (env, var)
   local tag = var.tag
   if tag == "Id" then -- `Id{ <string> }
+    local status, msg = validate_inline_anno(env, var)
+    if not status then return status, msg end
     return true
   elseif tag == "Index" then -- `Index{ expr expr }
-    local status, msg = traverse_exp(env, var[1])
+    status, msg = traverse_exp(env, var[1])
     if not status then return status, msg end
     status, msg = traverse_exp(env, var[2])
     if not status then return status, msg end
@@ -297,6 +386,8 @@ function traverse_exp (env, exp)
      tag == "Boolean" or -- `Boolean{ <boolean> }
      tag == "Number" or -- `Number{ <number> }
      tag == "String" then -- `String{ <string> }
+    local status, msg = validate_inline_anno(env, exp)
+    if not status then return status, msg end       
     return true
   elseif tag == "Dots" then
     return traverse_vararg(env, exp)
@@ -314,6 +405,8 @@ function traverse_exp (env, exp)
     return traverse_invoke(env, exp)
   elseif tag == "Id" or -- `Id{ <string> }
          tag == "Index" then -- `Index{ expr expr }
+    local status, msg = validate_inline_anno(env, exp)
+    if not status then return status, msg end       
     return traverse_var(env, exp)
   else
     error("expecting an expression, but got a " .. tag)
@@ -380,7 +473,19 @@ end
 local function traverse (ast, errorinfo)
   assert(type(ast) == "table")
   assert(type(errorinfo) == "table")
-  local env = { errorinfo = errorinfo, ["function"] = {} }
+  local env = {
+    errorinfo = errorinfo,
+    ["function"] = {},
+    cats = ast.cats or { classes = {}, aliases = {}, constants = {} }
+  }
+  for _, c in pairs(env.cats.classes) do
+    c.namedIndexFields = {}
+    for k, f in pairs(c.fields) do
+      if f.indexName then
+        c.namedIndexFields[f.indexName] = k
+      end
+    end
+  end
   new_function(env)
   set_vararg(env, true)
   local status, msg = traverse_block(env, ast)

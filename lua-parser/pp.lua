@@ -302,12 +302,107 @@ function stm2str (stm)
   return str
 end
 
+local function cats2str(cats)
+  if not cats then return "" end
+
+  local function format_sorted_table(t, format_func)
+    local keys = {}
+    for k in pairs(t) do
+      table.insert(keys, k)
+    end
+    table.sort(keys, function(a, b) return type(a) == type(b) and a < b or type(a) < type(b) end)
+
+    local parts = {}
+    for _, k in ipairs(keys) do
+      table.insert(parts, format_func(k, t[k]))
+    end
+    return parts
+  end
+
+  local function format_class(ck, cv)
+    local function format_field(fk, fv)
+      local indexName = fv.indexName and string.format("indexName = \"%s\", ", fv.indexName) or ""
+      return string.format(
+        '[%s] = { %sluaType = "%s", pos = %s, end_pos = %s }',
+        type(fk) == "number" and tostring(fk) or string.format('"%s"', fk),
+        indexName,
+        fv.luaType,
+        tostring(fv.pos),
+        tostring(fv.end_pos)
+      )
+    end
+
+    return string.format(
+      '[%s] = { fields = { %s }, pos = %s, end_pos = %s, validate = %s }',
+      string.format('"%s"', ck),
+      table.concat(format_sorted_table(cv.fields, format_field), ", "),
+      tostring(cv.pos),
+      tostring(cv.end_pos),
+      tostring(cv.validate)
+    )
+  end
+
+  local function format_alias(ak, av)
+    local function format_value(vk, vv)
+      return string.format(
+        '[%s] = { value = %s, pos = %s, end_pos = %s }',
+        type(vk) == "number" and tostring(vk) or string.format('"%s"', vk),
+        type(vv.value) == "number" and tostring(vv.value) or string.format('"%s"', tostring(vv.value)),
+        tostring(vv.pos),
+        tostring(vv.end_pos)
+      )
+    end
+
+    return string.format(
+      '[%s] = { values = { %s }, pos = %s, end_pos = %s }',
+      string.format('"%s"', ak),
+      table.concat(format_sorted_table(av.values, format_value), ", "),
+      tostring(av.pos),
+      tostring(av.end_pos)
+    )
+  end
+
+  local function format_constant(ck, cv)
+    return string.format(
+      '[%s] = { value = %s, pos = %s, end_pos = %s }',
+      string.format('"%s"', ck),
+      type(cv.value) == "number" and tostring(cv.value) or string.format('"%s"', cv.value),
+      tostring(cv.pos),
+      tostring(cv.end_pos)
+    )
+  end
+
+  local cats_parts = {
+    "classes", format_class,
+    "aliases", format_alias,
+    "constants", format_constant,
+  }
+  local parts = {}
+  for i = 1, #cats_parts, 2 do
+    if cats[cats_parts[i]] then
+      local p = format_sorted_table(cats[cats_parts[i]], cats_parts[i + 1])
+      if #p > 0 then
+        table.insert(parts, cats_parts[i] .. " = { " .. table.concat(p, ", ") .. " }")
+      end
+    end
+  end
+
+  if #parts > 0 then
+    return " : cats = { " .. table.concat(parts, ", ") .. " }"
+  end
+  return ""
+end
+
 function block2str (block)
   local l = {}
   for k, v in ipairs(block) do
     l[k] = stm2str(v)
   end
-  return "{ " .. table.concat(l, ", ") .. " }"
+  local str = "{ " .. table.concat(l, ", ") .. " }"
+  if block.cats then
+    str = str .. cats2str(block.cats)
+  end
+  return str
 end
 
 function pp.tostring (t)

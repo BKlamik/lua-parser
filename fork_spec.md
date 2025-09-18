@@ -16,7 +16,7 @@ If validating the project fails for LuaCATS class annotations that cannot be cha
 ---@field public [1] integer # GameId
 ```
 
-Missing annotation validation: If a variable is typed as a class that provides custom field annotations and comments, then bracket indexing on that variable must use the inline field annotations; otherwise, fail in the validation pass.
+Missing annotation validation: If a variable is typed as a class that provides names to all index fields through comments, then bracket indexing on that variable must use the inline field annotations; otherwise, fail in the validation pass.
 This is a best effort, and only catches the following cases:
 - Locals with direct type annotations
 - Direct assignments from known sources, including annotated class tables
@@ -34,28 +34,28 @@ For LuaCATS, we’ll keep the core AST shape intact and attach a sideband “met
 No comment nodes get emitted into the normal statement list.
 
 - Attach on the root Block node:
-  - block.meta = { cats = CatsDB }
+  - block.cats = CatsDB
 - CatsDB schema:
   - cats.classes: map<string ClassName, { pos, end_pos, base?: string, validate: boolean, fields: map<string|number, { luaType : string, pos, end_pos, indexName?: string }>}>
   - cats.pendingClass: { name: string, pos, end_pos, base?: string, validate: boolean } ; populated by ---@class; used for ---@field
   - cats.aliases: map<string AliasName, { pos, end_pos, values: map<string, { value: string, comment: string, pos, end_pos }>}>
   - cats.constants: map<string ConstName, { pos, end_pos, value: string }>
-  - cats.pendingVarType: { type: string, pos, end_pos } ; populated by ---@type; relocated last stored to pendingTypes on declaration
-  - cats.pendingVarParams: map<string, { type: string, pos, end_pos }> ; populated by ---@param; relocate group to pendingParams on declaration
-  - cats.pendingVarReturn: [{ type: string, pos, end_pos }] ; populated by ---@return; relocate group to pendingReturn on declaration
-  - cats.pendingTypes: [{ type: string, pos, end_pos }] ; populated by `local` and `set` variable names on declaration; relocated to env.varTypeStack on scope push/pop
+  - cats.pendingVarTypes: string[] ; populated by ---@type; relocated last stored to pendingTypes on declaration
+  - cats.pendingVarParams: map<string, { type: string, pos, end_pos }> ; populated by ---@param; relocate group to varTypes on declaration
+  - cats.pendingVarReturn: string[] ; populated by ---@return; relocate group to pendingReturn on declaration
+  - cats.varTypes: [map<string, string>] ; populated by `local` and `set` variable names on declaration; relocated to env.varTypeStack on scope push/pop
 - Inline annotations (already present):
   - exp.anno = { kind = "F"|"E"|"C", type = "FullName", name = "SimpleId"|nil, pos, end_pos }
-- No changes to existing node tags, only the new block.meta field.
+- No changes to existing node tags, only the new block.cats field.
 
 No other AST shapes change. All existing tags and node structures remain intact.
 
 ## Sideband LuaCATS schema
-Class registry: { [FullName] = { kind = "class", fields = { [SimpleId] = { index = literal, ... } } } }
+Class registry: { [FullName] = { fields = { [SimpleId] = { index = literal, ... } } } }
 
-Alias registry: { [FullName] = { kind = "alias", values = { [SimpleId] = { value = literal, ... } } } }
+Alias registry: { [FullName] = { values = { [SimpleId] = { value = literal, ... } } } }
 
-Const registry: { [FullName] = { kind = "const", value = literal } }
+Const registry: { [FullName] = { value = literal } }
 
 Typing (for missing annotation validation):
 
@@ -93,271 +93,137 @@ We extend the lexer’s Skip/Comment to recognize and parse “doc lines” and 
 
 Key idea: parse doc directives inside comments, do side effects only, consume them as whitespace (so they don’t appear in the AST), and collect into CatsDB.
 
-Add to the top of parser.lua (near other locals):
-```lua
-
-  - Initialize cats.classes, aliases, constants, etc.
-
--- Sideband accumulator: passed as Carg(2)
-local function cats_add_class(cats, fullName, base, pos, end_pos)
-  cats.classes[fullName] = { pos = pos, end_pos = end_pos, base = base, validate = true }
-  cats.currentClass = fullName
-end
-
-local function cats_add_field(cats, simpleId, literal, pos, end_pos)
-  if not cats.currentClass then --[[Fail FieldWithoutClass]] end
-  -- Manage index vs. string simpleId
-  cats.classes[cats.currentClass].fields[simpleId] = {index = literal, pos = pos, end_pos = end_pos}
-end
-
-local function cats_add_alias(cats, fullName, pos, end_pos, value)
-  if value then
-    cats.constants[fullName] = {pos = pos, end_pos = end_pos, value = value}
-  else
-    cats.aliases[fullName] = {pos = pos, end_pos = end_pos, values = {}}
-    cats.currentAlias = fullName
-  end
-end
-
-local function cats_add_alias_value(cats, simpleId, value, pos, end_pos)
-  if not cats.currentAlias then --[[Fail NoAlias]] end
-  local alias = cats.aliases[cats.currentAlias]
-  alias.values[simpleId] = {value = value, pos = pos, end_pos = end_pos}
-end
-
-local function cats_add_pending_var_type(cats, pname, pos, end_pos)
-  cats.pendingVarType = { type = pname, pos = pos, end_pos = end_pos }
-end
-
-local function cats_add_pending_var_params(cats, pname, ptype, pos, end_pos)
-  cats.pendingVarParams[pname] = { type = ptype, pos = pos, end_pos = end_pos }
-end
-
-local function cats_add_pending_var_return(cats, rtype, pos, end_pos)
-  table.insert(cats.pendingVarReturn, { type = rtype, pos = pos, end_pos = end_pos })
-end
-
-local function cats_add_pending_type(cats, typex, pos, end_pos)
-  table.insert(cats.pendingTypes, { type = typex, pos = pos, end_pos = end_pos })
-end
-```
-
-Then define the doc tokens. Keep them simple and robust; accept common LuaCATS patterns:
+Define the doc tokens. Keep them simple and robust; accept common LuaCATS patterns:
 
 ```lua
 -- Identifiers and simple type exprs for LuaCATS
-local alpha    = R("az","AZ")
-local digit    = R("09")
-local identStart = alpha + P"_"
-local identRest  = alpha + digit + P"_" + P"."
 local newline  = P("\r")^-1 * P("\n")
-local DocId = identStart * identRest^0              -- dotted names allowed in types/classes
-local DocTypeExpr = C((1 - S"\r\n")^1)                         -- keep raw type expression (no newline)
-
-local DocBOL = P("---") * optspace * P("@")
-
--- @type: ---@type TypeExpr   (applies to next local/assignment binding, resolved later)
-local DocType = DocBOL * P"type" * space^1 * C(DocTypeExpr)
-
--- identifiers
-
--- field key: either [number] or an alphanumeric identifier
-local BracketedIndex = P"[" * C(digit^1) * P"]"         -- capture only digits; strip [ ]
-local IdentKey       = C(identStart * identRest^0)
-
--- visibility (optional; capture token if present)
-local Visibility = C(P"public" + P"protected" + P"private")
-
--- type expression: everything up to '#' or end-of-line (trim later if needed)
-local TypeExpr = C((1 - P"#" - newline)^1)
-
--- field name token (required): stops at first unsupported char
-local FieldNameToken = C(identStart * identRest^0)
-
--- slerp: the remainder of the line after the name (including leading spaces)
-local Slerp = C(optsp * (1 - newline)^0)
-
--- Captures:
---   1: ClassName
---   2: BaseName (optional)
---   3: slerp (possibly empty), including leading spaces (e.g., "  # VALIDATE")
-local DocClass =
-  DocBOL * P"class" * sp
-  * C(DocId)
-  * (optsp * P":" * optsp * C(DocId))^-1
-  * Slerp
-
--- Key alternatives with kind tagging
-local KeyIndex =
-      Cg(Cc("index"), "keykind")
-  *   Cg(BracketedIndex, "key")           -- key = digits, kind = "index"
-
-local KeyName  =
-      Cg(Cc("name"),  "keykind")
-  *   Cg(IdentKey,    "key")              -- key = identifier, kind = "name"
-
--- Full @field line
--- Captures (named):
---   keykind: "index" | "name"
---   key:     digits (for index) or identifier (for name)
---   vis:     visibility token if present; nil otherwise
---   type:    type expression (raw)
---   fname:   field name token after '#'
---   slerp:   remainder after the name (may be empty)
-local DocField =
-  DocBOL * P"field" * sp
-* (Cg(Visibility, "vis") * sp)^-1
-* (KeyIndex + KeyName) * sp
-* Cg(TypeExpr, "type")
-* optsp * P"#" * optsp
-* Cg(FieldNameToken, "fname")
-* Cg(Slerp, "slerp")
-
-
--- @alias: ---@alias AliasName TypeExpr|value1|value2|...
-local identifier = (R("AZ", "az", "09") + S("._"))^1
-local DocAliasSingle = P("---@alias") * space^1 * C(identifier) * space^1 * C((1 - newline)^1)
-local DocAliasHeader = P("---@alias") * space^1 * C(identifier)
-
--- Union entry: ---| 1 # Engine
-local DocAliasUnion = P("---|") * space^0 *
-  C((1 - S("\r\n#"))^1) * -- value
-  (space^1 * P("#") * C((1 - S("\r\n"))^0))^-1 -- optional comment
-
--- Full block: header + one or more union entries
-local DocAliasUnionBlock = Cmt(Cp() * DocAliasHeader, function(_, pos, name)
-  return true, name, pos
-end)
-* Ct(DocAliasUnion^1) / function(unions)
-    local result = {}
-    for _, entry in ipairs(unions) do
-      table.insert(result, {
-        value = entry[1],
-        comment = entry[2] or nil
-      })
-    end
-    return result
-  end
-
-local DocAliasHeader = P"---@alias" * space^1 * C(FullName)
-
+local extra = (1-newline)^0
+local TypeExp = C((alnum + S"_.-\"'") * (alnum + S"_.-\"' []?<>")^0)
+local EOL = (P"\r"^-1 * P"\n") + -P(1)
+local wsp = S(" \t")^1
+local owsp = S(" \t")^0
+local DocId = C((alpha + P"_") * (alnum + S"_.-")^0)
+local DocBOL = P"---" * owsp * P"@"
+local DocBOL2 = P"---" * owsp * P"|"
+local Visibility = ((P"public" + P"protected" + P"private") * owsp)^-1
+local Key = ((P"[" * owsp * C(digit^1) * owsp * P"]") + C((alpha + P"_") * (alnum + P"_")^0)) * wsp
 ```
 
 Wire these into Comment with side-effects, using Cmt and Carg(2). We also want to support “---@field Class.Field Type” pattern to avoid building class-context in the grammar; we can split by the first dot to get Class and Field when present, else accept as a “global field” (ignored or stored if you want).
 
-Replace Comment rule with a version that first tries doc lines, and if matched, mutates CatsDB then consumes to EOL:
+Now the actual pattern (note: we need Cp() and the end position; we can get end by consuming until newline and using Cp again, or compute end as position before newline — we’ll just use start pos, it’s usually sufficient):
+
+Replace Comment rule with a version that first tries doc lines, and if matched, mutates CatsDB then consumes to EOL of full multi-line annotation group:
 
 ```lua
 -- In G:
   -- lexer
+  DocClassLine = Cmt(
+    Cp() * DocBOL * P"class" * wsp * Carg(2) * DocId * ((owsp * P":" * owsp * DocId) + Cc(nil)) * C(extra) * EOL,
+    function(_, i, pos, cats, cname, base, x) return DoDocClass(cats, pos, i, cname, base, x) end
+  );
+
+  DocFieldLine = Cmt(
+    Cp() * DocBOL * P"field" * wsp * Carg(2) * Visibility * Key * DocId * (owsp * P"#" * owsp * DocId)^-1 * extra * EOL,
+    function(_, i, pos, cats, key, keyType, fname) return DoDocField(cats, pos, i, key, keyType, fname) end
+  );
+
+  DocAliasHeaderLine = Cmt(
+    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * owsp * EOL,
+    function(_, i, pos, cats, aname, alias) return DoDocAlias(cats, pos, i, aname) end
+  );
+
+  DocAliasUnionLine = Cmt(
+    Cp() * DocBOL2 * owsp * Carg(2) * C((alnum + S"_.")^1) * (owsp * P"#" * owsp * DocId)^-1 * extra * EOL,
+    function(_, i, pos, cats, value, ename) return DoDocAliasUnion(cats, pos, i, value, ename) end
+  );
+
+  DocAliasLine = Cmt(
+    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * (wsp * TypeExp)^-1 * extra * EOL,
+    function(_, i, pos, cats, aname, alias) return DoDocAlias(cats, pos, i, aname, alias) end
+  );
+
+  DocTypeLine = Cmt(
+    Cp() * DocBOL * P"type" * wsp * Carg(2) * Ct(TypeExp * (P"," * owsp * TypeExp)^0) * extra * EOL,
+    function(_, i, pos, cats, types) return DoDocType(cats, pos, i, types) end
+  );
+
+  DocParamLine = Cmt(
+    Cp() * DocBOL * P"param" * wsp * Carg(2) * TypeExp * wsp * TypeExp * extra * EOL,
+    function(_, i, pos, cats, pname, ptype) return DoDocParam(cats, pos, i, pname, ptype) end
+  );
+
+  DocReturnLine = Cmt(
+    Cp() * DocBOL * P"return" * wsp * Carg(2) * Ct(TypeExp * (P"," * owsp * TypeExp)^0) * extra * EOL,
+    function(_, i, pos, cats, rtypes) return DoDocReturn(cats, pos, i, rtypes) end
+  );
+
   Skip     = (V"Space" + V"DocComment" + V"Comment")^0;
   Space    = space^1;
 
-  -- Recognize LuaCATS doc directives; side effects into CatsDB (Carg(2))
-  DocComment =
-      Cmt((Cp() * DocClass), function(s,i,pos, cname, base)
-        local cats = Carg(2):get()  -- pattern-time access won't work; use closures instead
-        return false
-      end);
-
+  DocComment = (V"DocClassLine" * V"DocFieldLine"^0) + (V"DocAliasHeaderLine" * V"DocAliasUnionLine"^0) + V"DocAliasLine" + V"DocTypeLine" + V"DocParamLine" + V"DocReturnLine";
 ```
 
 Because Carg access is not available directly within plain function bodies without wrapping, implement DocComment as a sum of patterns each with its own Cmt and closure to the cats table using Carg and Cmt’s extra captures. The standard way:
 
 Define helper constructors above grammar:
 ```lua
-local function DoDocClass(cname, base, cats, pos, endpos)
-  cats_add_class(cats, cname, base, pos, endpos); return true
-end
-
-local function DoDocField(fqname, typex, cats, pos, endpos)
-  local cls, fname = fqname:match("^(.-)%.([A-Za-z_][A-Za-z0-9_]*)$")
-  if cls and fname then cats_add_field(cats, cls, fname, typex, pos, endpos) end
+local function DoDocClass(cats, pos, endpos, fullName, base, x)
+  local validate = true or (x and x:match("%f[%w]VALIDATE%f[%W]"))
+  cats.classes[fullName] = { pos = pos, end_pos = endpos, base = base, validate = validate, fields = {} }
+  cats.currentClass = fullName
   return true
 end
 
-local function DoDocAlias(pos, name, unionStr, cats)
-  local union = {}
-  for value in unionStr:gmatch("[^|]+") do
-    table.insert(union, { value = value:match("^%s*(.-)%s*$") })
+local function DoDocField(cats, pos, endpos, key, keyType, fname)
+  if not cats.currentClass then return true end
+  local class = cats.classes[cats.currentClass]
+  if not class then return true end
+
+  local indexKey = tonumber(key)
+  if indexKey then
+    class.fields[indexKey] = { luaType = keyType, pos = pos, end_pos = endpos, indexName = fname }
+    class.validate = class.validate and fname ~= nil
+  else
+    class.fields[key] = { luaType = keyType, pos = pos, end_pos = endpos }
   end
-  cats.aliases[name] = { union = union, pos = pos }
+  return true
 end
 
-local function DoDocAliasUnion(pos, name, unionEntries, cats)
-  local union = {}
-  for _, entry in ipairs(unionEntries) do
-    table.insert(union, {
-      value = entry[1],
-      comment = entry[2] or nil
-    })
+local function DoDocAlias(cats, pos, endpos, aname, alias)
+  if alias then
+    cats.constants[aname] = { value = alias:gsub("%s+$", ""), pos = pos, end_pos = endpos }
+  else
+    cats.aliases[aname] = { values = {}, pos = pos, end_pos = endpos }
+    cats.currentAlias = aname
   end
-  cats.aliases[name] = { union = union, pos = pos }
+  return true
 end
 
-local function DoDocEnum(ename, raw, cats, pos, endpos)
-  local values = {}
-  for v in raw:gmatch("[^|%s]+") do values[v] = true end
-  cats_add_enum(cats, ename, values, pos, endpos); return true
-end
-
-local function DoDocType(typex, cats, pos, endpos)
-  cats_add_pending_type(cats, typex, pos, endpos); return true
-end
-```
-
-Now the actual pattern (note: we need Cp() and the end position; we can get end by consuming until newline and using Cp again, or compute end as position before newline — we’ll just use start pos, it’s usually sufficient):
-
-```lua
--- Consume line to EOL regardless of directive success
-local EOL = (P"\r"^-1 * P"\n") + -P(1)
-
-DocClassLine  = Cmt(Cp() * DocClass * Carg(2), function(s, i, pos, cname, base, cats)
-                      DoDocClass(cname, base, cats, pos, i); return true
-                    end) * (P(1) - EOL)^0 * EOL
-DocFieldLine  = Cmt(Cp() * DocFieldLine * Carg(2), function(s, i, pos, fqname, typex, cats)
-                      DoDocField(fqname, typex, cats, pos, i); return true
-                    end) * (P(1) - EOL)^0 * EOL
-DocAliasLine  = Cmt(Cp() * DocAlias * Carg(2), function(s, i, pos, aname, typex, cats)
-                      DoDocAlias(aname, typex, cats, pos, i); return true
-                    end) * (P(1) - EOL)^0 * EOL
-
-local DocAliasHeader = Cmt(Cp() * P("---@alias") * space^1 * C(identifier), function(_, i, pos, name)
-  return true, name, pos
-end)
-
-local DocAliasUnionLine = Cmt(Cp() * P("---|") * space^0 *
-  C((1 - S("\r\n#"))^1) * -- value
-  (space^1 * P("#") * C((1 - S("\r\n"))^0))^-1 * Carg(2),
-  function(_, i, pos, value, comment, cats)
-    return true, { value = value:match("^%s*(.-)%s*$"), comment = comment, pos = pos }
+local function DoDocAliasUnion(cats, pos, endpos, value, ename)
+  if ename then
+    if not cats.currentAlias then return true end
+    local alias = cats.aliases[cats.currentAlias]
+    alias.values[ename] = { value = value, pos = pos, end_pos = endpos }
   end
-) * (P(1) - EOL)^0 * EOL
-
-local DocAliasUnionBlock = DocAliasHeader * Carg(2) / function(name, pos, cats)
-  cats.aliases[name] = { union = {}, pos = pos }
-  cats._currentAlias = name
-end
-* DocAliasUnionLine^1 / function(entries)
-  local name = cats._currentAlias
-  for _, entry in ipairs(entries) do
-    table.insert(cats.aliases[name].union, entry)
-  end
-  cats._currentAlias = nil
+  return true
 end
 
-DocTypeLine   = Cmt(Cp() * DocType * Carg(2), function(s, i, pos, typex, cats)
-                      DoDocType(typex, cats, pos, i); return true
-                    end) * (P(1) - EOL)^0 * EOL
+local function DoDocType(cats, pos, endpos, types)
+  cats.pendingVarTypes = types
+  return true
+end
 
-DocComment = DocClassLine + DocFieldLine + DocAliasLine + DocAliasUnionBlock + DocTypeLine
-```
+local function DoDocParam(cats, pos, endpos, pname, ptype)
+  cats.pendingVarParams[pname] = { type = ptype, pos = pos, end_pos = endpos }
+  return true
+end
 
-Finally, make Skip prefer DocComment over generic Comment:
-```lua
-Skip     = (V"Space" + V"DocComment" + V"Comment")^0;
-Comment  = P"--" * V"LongStr" / function () return end
-         + P"--" * (P(1) - P"\n")^0 * (P"\n" + -P(1));
+local function DoDocReturn(cats, pos, endpos, rtypes)
+  cats.pendingVarReturn = rtypes
+  return true
+end
 ```
 
 Parser.parse integration:
@@ -367,11 +233,18 @@ function parser.parse (subject, filename)
   local cats = { classes = {}, aliases = {}, constants = {}, pendingVarReturn = {}, pendingTypes = {} }
   lpeg.setmaxstack(1000)
   local ast, label, errorpos = lpeg.match(G, subject, nil, errorinfo, cats) -- errorinfo as 4th arg is Carg(1), cats as 5th arg is Carg(2)
+  cats.currentAlias = nil
+  cats.currentClass = nil
+  cats.pendingVarTypes = nil
+  cats.pendingVarParams = nil
+  cats.pendingVarReturn = nil
+  cats.pendingTypes = nil
   ...
+  ast.cats = cats
   local ok_or_ast, err = validate(ast, errorinfo)  -- unchanged call
   if type(ok_or_ast) == "table" then
-    ok_or_ast.meta = ok_or_ast.meta or {}
-    ok_or_ast.meta.cats = cats
+    ok_or_ast = ok_or_ast or {}
+    ok_or_ast.cats = cats
   end
   return ok_or_ast, err
 end
@@ -384,30 +257,30 @@ Notes:
 
 ### Validation pass design
 
-We extend validator to leverage meta.cats to validate inline annotations and enforce typed-index rules. Keep original control-flow validations intact.
+We extend validator to leverage cats to validate inline annotations and enforce typed-index rules. Keep original control-flow validations intact.
 
 Core responsibilities:
 
 1) Validate that inline annotations reference known types and values
 - For node.anno.kind == "F":
   - anno.type must resolve to a known type:
-    - meta.cats.classes[node.anno.type] must exist
+    - cats.classes[node.anno.type] must exist
   - anno.name must resolve to a known field in the class:
-    - meta.cats.classes[node.anno.type].fields[node.anno.name] must exist
+    - cats.classes[node.anno.type].fields[node.anno.name] must exist
   - ensure literal equals fields[node.anno.name].index
-    - node[1] must be equal to meta.cats.classes[node.anno.type].fields[node.anno.name].index
+    - node[1] must be equal to cats.classes[node.anno.type].fields[node.anno.name].index
 - For node.anno.kind == "E":
   - anno.type must resolve to a known type:
-    - meta.cats.aliases[node.anno.type] must exist
+    - cats.aliases[node.anno.type] must exist
   - anno.name must resolve to a known value in the alias:
-    - meta.cats.aliases[node.anno.type].values[node.anno.name] must exist
+    - cats.aliases[node.anno.type].values[node.anno.name] must exist
   - ensure literal equals values[node.anno.name].value
-    - node[1] must be equal to meta.cats.aliases[node.anno.type].values[node.anno.name].value
+    - node[1] must be equal to cats.aliases[node.anno.type].values[node.anno.name].value
 - For node.anno.kind == "C":
   - anno.type must resolve to a known type:
-    - meta.cats.constants[node.anno.type] must exist
+    - cats.constants[node.anno.type] must exist
   - ensure literal equals value
-    - node[1] must be equal to meta.cats.constants[node.anno.type].value
+    - node[1] must be equal to cats.constants[node.anno.type].value
 
 2) Bind @type pending docs to nearest relevant declaration/assignment
 - Strategy: while traversing statements in order, maintain a queue cats.pendingTypes (sorted by position).
@@ -424,7 +297,7 @@ Core responsibilities:
 
 Minimal extensions in validator.lua:
 
-- Load cats: local cats = ast.meta and ast.meta.cats
+- Load cats: local cats = ast.cats
 - Track varTypes during traversal in a simple lexical map stack to respect scope
 
 Enforcement points:
@@ -448,30 +321,85 @@ Binding @type while traversing:
 
 ```lua
 -- In validator.lua
-local function resolve_type(cats, name)
-  if cats.classes[name] then return "class", cats.classes[name] end
-  if cats.aliases[name] then return "alias", cats.aliases[name] end
-  return nil, nil
-end
+local function validate_inline_anno(env, node)
+  local a = node.anno
+  if not a then return true end
 
-local function validate_inline_anno(env, cats, node)
-  local a = node.anno; if not a then return true end
-  local kind, def = resolve_type(cats, a.type)
-  if not kind then return nil, syntaxerror(env.errorinfo, a.pos, "unknown type '"..a.type.."' in inline annotation") end
+  if a.kind == "F" then
+    local class = env.cats.classes[a.type]
+    if not class then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'F', class type name '" .. a.type .. "' does not exist"
+      )
+    end
 
-  if a.kind == "E" then
-    if kind ~= "enum" then return nil, syntaxerror(env.errorinfo, a.pos, "annotation kind 'E' requires enum type '"..a.type.."'") end
-    if a.name and not def.values[a.name] then
-      return nil, syntaxerror(env.errorinfo, a.pos, "unknown enum value '"..a.name.."' for enum '"..a.type.."'")
+    local fieldKey = class.namedIndexFields[a.name]
+    if not fieldKey then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'F', '" .. a.type .. "' class index field name '" .. a.name .. "' does not exist"
+      )
     end
-  elseif a.kind == "F" then
-    if kind ~= "class" then return nil, syntaxerror(env.errorinfo, a.pos, "annotation kind 'F' requires class type '"..a.type.."'")
+
+    if tostring(fieldKey) ~= tostring(node[1]) then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        ("invalid inline annotation 'F', '" .. a.type .. "' class index field name '" .. a.name .. "' value '" ..
+          tostring(fieldKey) .. "' does not match the inline annotated value of '" .. tostring(node[1]) .. "'"
+        )
+      )
     end
-    if a.name and not def.fields[a.name] then
-      return nil, syntaxerror(env.errorinfo, a.pos, "unknown field '"..a.name.."' for class '"..a.type.."'")
+  elseif a.kind == "E" then
+    local alias = env.cats.aliases[a.type]
+    if not alias then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'E', alias type name '" .. a.type .. "' does not exist"
+      )
+    end
+
+    local value = alias.values[a.name]
+    if not value then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'E', '" .. a.type .. "' alias index value name '" .. a.name .. "' does not exist"
+      )
+    end
+
+    if tostring(value.value) ~= tostring(node[1]) then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        ("invalid inline annotation 'E', '" .. a.type .. "' alias index value name '" .. a.name .. "' value '" ..
+          tostring(value.value) .. "' does not match the inline annotated value of '" .. tostring(node[1]) .. "'"
+        )
+      )
     end
   elseif a.kind == "C" then
-    -- allow class/alias/enum; no extra checks here
+    local const = env.cats.constants[a.type]
+    if not const then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        "invalid inline annotation 'C', alias type name '" .. a.type .. "' does not exist"
+      )
+    end
+
+    if tostring(const.value) ~= tostring(node[1]) and tostring(const.value) ~= tostring('"' .. node[1] .. '"') then
+      return nil, syntaxerror(
+        env.errorinfo,
+        a.pos,
+        ("invalid inline annotation 'C', '" .. a.type .. "' alias type name value '" .. tostring(const.value) ..
+          "' does not match the inline annotated value of '" .. tostring(node[1]) .. "'"
+        )
+      )
+    end
   end
   return true
 end
@@ -493,12 +421,12 @@ end
 function traverse_var(env, var)
   local cats = env.cats
   -- Validate inline anno on Id/Index nodes themselves (optional)
-  local ok, msg = validate_inline_anno(env, cats, var); if not ok then return ok, msg end
+  local ok, msg = validate_inline_anno(env, var); if not ok then return ok, msg end
 
   if var.tag == "Index" then
     local base = var[1]; local key = var[2]
     -- Validate inline anno on key
-    local ok2, msg2 = validate_inline_anno(env, cats, key); if not ok2 then return ok2, msg2 end
+    local ok2, msg2 = validate_inline_anno(env, key); if not ok2 then return ok2, msg2 end
 
     if base.tag == "Id" then
       local vt = cats.varTypes[base[1]]
@@ -531,13 +459,24 @@ elseif tag == "Set" then
 end
 
 -- In traverse_exp, before dispatching by tag, validate_inline_anno on Number/String/Id nodes (they carry anno)
-local ok, msg = validate_inline_anno(env, env.cats, exp); if not ok then return ok, msg end
+local ok, msg = validate_inline_anno(env, exp); if not ok then return ok, msg end
 ```
 
-Initialize env.cats at the start of validate:
+Initialize env.cats at the start of validate (traverse), and cache index lookup:
 ```lua
-local cats = ast.meta and ast.meta.cats or { classes={},aliases={},varTypes={},pendingTypes={} }
-env.cats = cats
+  local env = {
+    errorinfo = errorinfo,
+    ["function"] = {},
+    cats = ast.cats or { classes = {}, aliases = {}, constants = {} }
+  }
+  for _, c in pairs(env.cats.classes) do
+    c.namedIndexFields = {}
+    for k, f in pairs(c.fields) do
+      if f.indexName then
+        c.namedIndexFields[f.indexName] = k
+      end
+    end
+  end
 ```
 
 ## **Lexical Stack for ---@type annotations**
@@ -656,58 +595,68 @@ local c = --[[E:My.Enum:Six]] 6
 local d = --[[E:My.Enum:Seven]] 7 
 ```
 
-- Expect: parse OK, and block.meta.cats contains:
+- Expect: parse OK, and block.cats contains:
   - classes["My.Point"].fields = { "w"={index=1, ...}, "x"={index=2, ...}, "y"={index=3, ...}, "z"={index=4, ...} }
   - constants["My.Num"] = { value = "9", ... }
   - aliases["My.Enum"].values = { "Five"={value=5, ...}, "Six"={value=6, ...}, "Seven"={value=7, ...} }
-- Modify pp.lua to output block.meta.cats so that tests can validate it.
+- Modify pp.lua to output block.cats when non-empty so that tests can validate it.
 
 2) Inline annotation type validation
-- Good:
-```lua
-local n = 9 --[[C:My.Num]]
-local e = 5 --[[E:My.Enum:Five]]
-```
 - Bad (unknown type):
 ```lua
 local n = 3 --[[C:No.Such.Type]]
--- expect: invalid inline annotation name: No.Such.Type does not exist
 ```
+test.lua:1:13: syntax error, invalid inline annotation 'C', alias type name 'No.Such.Type' does not exist
 - Bad (unequal value):
 ```lua
+---@alias My.Num 9
 local n = 3 --[[C:My.Num]]
--- expect: invalid inline annotation value for My.Num: expected 9, got 3
 ```
+test.lua:2:13: syntax error, invalid inline annotation 'C', 'My.Num' alias type name value '9' does not match the inline annotated value of '3'
 - Bad (unknown type):
 ```lua
-local n = 9 --[[E:No.Such.Type:Val]]
--- expect: invalid inline annotation name: No.Such.Type does not exist
+local e = 5 --[[E:No.Such.Enum:Val]]
 ```
+test.lua:1:13: syntax error, invalid inline annotation 'E', alias type name 'No.Such.Enum' does not exist
 - Bad (unknown enum):
 ```lua
-local e = 5 --[[E:My.Enum:PINK]]
--- expect: invalid inline annotation name: PINK is not a member of My.Enum
+---@alias My.Enum
+---| 1 # One
+
+local x = 2 --[[E:My.Enum:Two]]
 ```
+test.lua:4:13: syntax error, invalid inline annotation 'E', 'My.Enum' alias index value name 'Two' does not exist
 - Bad (unequal enum value):
 ```lua
-local e = 6 --[[E:My.Enum:Five]]
--- expect: invalid inline annotation value for My.Enum:Five: expected 5, got 6
+---@alias My.Enum
+---| 1 # One
+
+local x = 2 --[[E:My.Enum:One]]
 ```
+test.lua:4:13: syntax error, invalid inline annotation 'E', 'My.Enum' alias index value name 'One' value '1' does not match the inline annotated value of '2'
 - Bad (unknown type):
 ```lua
-local n = 9 --[[F:No.Such.Type:Val]]
--- expect: invalid inline annotation name: No.Such.Type does not exist
+local f = 1 --[[F:No.Such.Class:field]]
 ```
+test.lua:1:13: syntax error, invalid inline annotation 'F', class type name 'No.Such.Class' does not exist
 - Bad (unknown field):
 ```lua
-local e = 5 --[[F:My.Point:PINK]]
--- expect: invalid inline annotation name: PINK is not a member of My.Point
+---@class My.Class
+---@field [1] number # id
+
+local t = {}
+local x = t[ 2 --[[F:My.Class:invalid]] ] 
 ```
+test.lua:5:16: syntax error, invalid inline annotation 'F', 'My.Class' class index field name 'invalid' does not exist
 - Bad (unequal field value):
 ```lua
-local e = 6 --[[F:My.Point:width]]
--- expect: invalid inline annotation value for My.Point:width: expected 1, got 6
+---@class My.Class
+---@field [1] number # id
+
+local t = {}
+local x = t[ 2 --[[F:My.Class:id]] ] 
 ```
+test.lua:5:16: syntax error, invalid inline annotation 'F', 'My.Class' class index field name 'id' value '1' does not match the inline annotated value of '2'
 
 3) Binding @type to Set and Local
 - Good:
@@ -738,26 +687,7 @@ local b = t[ 1 --[[F:C:D]] ]
 -- expect: mismatched inline annotation name: expected A, got C
 ```
 
-4) Scope management
-
-```lua
----@class A
----@field [1] number # B
----@class C
----@field [2] number # D
----@type A
-local p = {[1 --[[F:A:B]]] = 1}
-do
-  ---@type C
-  local p = {[2 --[[F:C:D]]] = 2}
-  local w = p[ 2 --[[F:C:D]] ] -- should validate against C
-end
-local x = p[ 1 --[[F:A:B]] ] -- should validate against A
-```
-
-If `cats.varTypes` is flat, this will fail or misvalidate. With scoped stack, it works correctly.
-
-5) Missing annotations
+4) Missing annotations
 - Good:
 ```lua
 ---@class My.Box
@@ -793,7 +723,26 @@ local w = b[2]
 -- expect: missing annotation indexing b[2], expected b[ 2 --[[F:My.Box:...]] ]
 ```
 
-7) Regressions
+5) Scope management
+
+```lua
+---@class A
+---@field [1] number # B
+---@class C
+---@field [2] number # D
+---@type A
+local p = {[1 --[[F:A:B]]] = 1}
+do
+  ---@type C
+  local p = {[2 --[[F:C:D]]] = 2}
+  local w = p[ 2 --[[F:C:D]] ] -- should validate against C
+end
+local x = p[ 1 --[[F:A:B]] ] -- should validate against A
+```
+
+If `cats.varTypes` is flat, this will fail or misvalidate. With scoped stack, it works correctly.
+
+6) Regressions
 - All existing tests must remain green.
 - Inline F/E/C happy-paths already in your suite should still pass (now with type checks if you add the needed @class/@alias/@enum above them, or keep validation permissive when type not in cats if you want a phased rollout).
 

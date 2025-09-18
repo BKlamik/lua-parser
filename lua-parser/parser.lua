@@ -62,7 +62,6 @@ local alpha, digit, alnum = lpeg.alpha, lpeg.digit, lpeg.alnum
 local xdigit = lpeg.xdigit
 local space = lpeg.space
 
-
 -- error message auxiliary functions
 
 local labels = {
@@ -281,7 +280,7 @@ local AnnoBase = (AnnoField + AnnoEnum + AnnoConst)
 local Annotation = tagC("InlineAnno", AnnoBase)
 
 local function attachAnno(node, anno, _)
-  if not anno then return node end
+  if node.anno or not anno then return node end
   node.anno = {
     kind = anno[1]:sub(1, 1),
     type = anno[2],
@@ -292,6 +291,82 @@ local function attachAnno(node, anno, _)
   }
   return node
 end
+
+--[[ Sideband LuaCATS parsing ]]
+local function DoDocClass(cats, pos, endpos, fullName, base, x)
+  local validate = true or (x and x:match("%f[%w]VALIDATE%f[%W]"))
+  cats.classes[fullName] = { pos = pos, end_pos = endpos, base = base, validate = validate, fields = {} }
+  cats.currentClass = fullName
+  return true
+end
+
+local function DoDocField(cats, pos, endpos, key, keyType, cmt)
+  if not cats.currentClass then return true end
+  local class = cats.classes[cats.currentClass]
+  if not class then return true end
+
+  local indexKey = tonumber(key)
+  keyType = keyType:gsub("%s+$", "")
+  if indexKey then
+    local fname = cmt and cmt:match("[a-zA-Z_][a-zA-Z0-9_%.]*")
+    if fname and ((#fname > 1 and fname:sub(-1) == ".") or fname == "") then fname = nil end
+    local field = { luaType = keyType, pos = pos, end_pos = endpos }
+    if fname then field.indexName = fname end
+    class.fields[indexKey] = field
+    class.validate = class.validate and fname ~= nil
+  else
+    class.fields[key] = { luaType = keyType, pos = pos, end_pos = endpos }
+  end
+  return true
+end
+
+local function DoDocAlias(cats, pos, endpos, aname, alias)
+  if alias then
+    cats.constants[aname] = { value = alias:gsub("%s+$", ""), pos = pos, end_pos = endpos }
+  else
+    cats.aliases[aname] = { values = {}, pos = pos, end_pos = endpos }
+    cats.currentAlias = aname
+  end
+  return true
+end
+
+local function DoDocAliasUnion(cats, pos, endpos, value, ename)
+  if ename then
+    if not cats.currentAlias then return true end
+    local alias = cats.aliases[cats.currentAlias]
+    alias.values[ename] = { value = value, pos = pos, end_pos = endpos }
+  end
+  return true
+end
+
+-- local function DoDocType(cats, pos, endpos, types)
+--   cats.pendingVarTypes = types
+--   return true
+-- end
+
+-- local function DoDocParam(cats, pos, endpos, pname, ptype)
+--   cats.pendingVarParams[pname] = { type = ptype, pos = pos, end_pos = endpos }
+--   return true
+-- end
+
+-- local function DoDocReturn(cats, pos, endpos, rtypes)
+--   cats.pendingVarReturn = rtypes
+--   return true
+-- end
+
+local newline  = P("\r")^-1 * P("\n")
+local extra = (1-newline)^0
+local EOL = (P"\r"^-1 * P"\n") + -P(1)
+local FieldType = C(alpha * (P(1) - P"#" - EOL)^0)
+local wsp = S(" \t")^1
+local owsp = S(" \t")^0
+local FieldCmt = P("#") * owsp * (C((P(1) - S(" \t") - EOL) * (P(1) - EOL)^0) + Cc(nil))
+local Alias = C((P(1) - S" \t#" - EOL)^0)
+local DocId = C((alpha + P"_") * (alnum + S"_.-")^0)
+local DocBOL = P"---" * owsp * P"@"
+local DocBOL2 = P"---" * owsp * P"|"
+local Visibility = ((P"public" + P"protected" + P"private") * owsp)^-1
+local Key = ((P"[" * owsp * C(digit^1) * owsp * P"]") + C((alpha + P"_") * (alnum + P"_")^0)) * wsp
 
 -- grammar
 local G = { V"Lua",
@@ -395,7 +470,48 @@ local G = { V"Lua",
   StrId  = tagC("String", V"Name");
 
   -- lexer
-  Skip     = (V"Space" + V"Comment")^0;
+  DocClassLine = Cmt(
+    Cp() * DocBOL * P"class" * wsp * Carg(2) * DocId * ((owsp * P":" * owsp * DocId) + Cc(nil)) * C(extra) * EOL,
+    function(_, i, pos, cats, cname, base, x) return DoDocClass(cats, pos, i, cname, base, x) end
+  );
+
+  DocFieldLine = Cmt(
+    owsp * Cp() * DocBOL * P"field" * wsp * Carg(2) * Visibility * Key * FieldType * (FieldCmt + Cc(nil)) * EOL,
+    function(_, i, pos, cats, key, keyType, cmt) return DoDocField(cats, pos, i, key, keyType, cmt) end
+  );
+
+  DocAliasHeaderLine = Cmt(
+    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * owsp * EOL,
+    function(_, i, pos, cats, aname, alias) return DoDocAlias(cats, pos, i, aname) end
+  );
+
+  DocAliasUnionLine = Cmt(
+    owsp * Cp() * DocBOL2 * owsp * Carg(2) * C((alnum + S"_.")^1) * (owsp * P"#" * owsp * DocId)^-1 * extra * EOL,
+    function(_, i, pos, cats, value, ename) return DoDocAliasUnion(cats, pos, i, value, ename) end
+  );
+
+  DocAliasLine = Cmt(
+    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * (wsp * Alias)^-1 * extra * EOL,
+    function(_, i, pos, cats, aname, alias) return DoDocAlias(cats, pos, i, aname, alias) end
+  );
+
+  -- DocTypeLine = Cmt(
+  --   Cp() * DocBOL * P"type" * wsp * Carg(2) * Ct(TypeExp * (P"," * owsp * TypeExp)^0) * extra * EOL,
+  --   function(_, i, pos, cats, types) return DoDocType(cats, pos, i, types) end
+  -- );
+
+  -- DocParamLine = Cmt(
+  --   Cp() * DocBOL * P"param" * wsp * Carg(2) * TypeExp * wsp * TypeExp * extra * EOL,
+  --   function(_, i, pos, cats, pname, ptype) return DoDocParam(cats, pos, i, pname, ptype) end
+  -- );
+
+  -- DocReturnLine = Cmt(
+  --   Cp() * DocBOL * P"return" * wsp * Carg(2) * Ct(TypeExp * (P"," * owsp * TypeExp)^0) * extra * EOL,
+  --   function(_, i, pos, cats, rtypes) return DoDocReturn(cats, pos, i, rtypes) end
+  -- );
+
+  DocComment = (V"DocClassLine" * V"DocFieldLine"^0) + (V"DocAliasHeaderLine" * V"DocAliasUnionLine"^0) + V"DocAliasLine"; -- + V"DocTypeLine" + V"DocParamLine" + V"DocReturnLine";
+  Skip     = (V"Space" + V"DocComment" + V"Comment")^0;
   Space    = space^1;
   Comment  = P"--" * V"LongStr" / function () return end
            + P"--" * (P(1) - P"\n")^0;
@@ -500,8 +616,15 @@ local syntaxerror = validator.syntaxerror
 
 function parser.parse (subject, filename)
   local errorinfo = { subject = subject, filename = filename }
+  local cats = { classes = {}, aliases = {}, constants = {}, pendingVarParams = {}, pendingTypes = {} }
   lpeg.setmaxstack(1000)
-  local ast, label, errorpos = lpeg.match(G, subject, nil, errorinfo)
+  local ast, label, errorpos = lpeg.match(G, subject, nil, errorinfo, cats)
+  cats.currentAlias = nil
+  cats.currentClass = nil
+  cats.pendingVarTypes = nil
+  cats.pendingVarParams = nil
+  cats.pendingVarReturn = nil
+  cats.pendingTypes = nil
   if not ast then
     if parser.detailed_errors then
       local re = require "relabel"
@@ -518,7 +641,13 @@ function parser.parse (subject, filename)
       return ast, syntaxerror(errorinfo, errorpos, errmsg)
     end
   end
-  return validate(ast, errorinfo)
+  ast.cats = cats
+  local ok_or_ast, err = validate(ast, errorinfo)
+  if type(ok_or_ast) == "table" then
+    ok_or_ast = ok_or_ast or {}
+    ok_or_ast.cats = cats
+  end
+  return ok_or_ast, err
 end
 
 return parser
