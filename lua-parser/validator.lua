@@ -478,13 +478,21 @@ local function traverse (ast, errorinfo)
     ["function"] = {},
     cats = ast.cats or { classes = {}, aliases = {}, constants = {} }
   }
-  for _, c in pairs(env.cats.classes) do
-    c.namedIndexFields = {}
-    for k, f in pairs(c.fields) do
+  local function processClass(class, namedIndexFields)
+    local base = class.base
+    local classBase = base and env.cats.classes[base]
+    if classBase then
+      processClass(classBase, namedIndexFields)
+    end
+    for k, f in pairs(class.fields) do
       if f.indexName then
-        c.namedIndexFields[f.indexName] = k
+        namedIndexFields[f.indexName] = k
       end
     end
+  end
+  for _, c in pairs(env.cats.classes) do
+    c.namedIndexFields = {}
+    processClass(c, c.namedIndexFields)
   end
   new_function(env)
   set_vararg(env, true)

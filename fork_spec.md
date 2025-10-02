@@ -23,6 +23,9 @@ This is a best effort, and only catches the following cases:
 - Function parameters with annotated types
 - Function returns with annotated types
 
+Validating annotations within published scripts can rely on the bundling of LuaCATS metadata with the script, due to header composition that occurs during publishing.
+However, validating annotations within the development/ test environment requires a way to pass the LuaCATS metadata gathered from the parse of some files to the parse of other files.
+
 ## AST surface
 New optional field: node.anno on `Number`, `String`, and `Id` nodes.
 
@@ -99,10 +102,12 @@ Define the doc tokens. Keep them simple and robust; accept common LuaCATS patter
 -- Identifiers and simple type exprs for LuaCATS
 local newline  = P("\r")^-1 * P("\n")
 local extra = (1-newline)^0
-local TypeExp = C((alnum + S"_.-\"'") * (alnum + S"_.-\"' []?<>")^0)
 local EOL = (P"\r"^-1 * P"\n") + -P(1)
+local FieldType = C(alpha * (P(1) - P"#" - EOL)^0)
 local wsp = S(" \t")^1
 local owsp = S(" \t")^0
+local FieldCmt = P("#") * owsp * (C((P(1) - S(" \t") - EOL) * (P(1) - EOL)^0) + Cc(nil))
+local Alias = C((P(1) - S" \t#" - EOL)^0)
 local DocId = C((alpha + P"_") * (alnum + S"_.-")^0)
 local DocBOL = P"---" * owsp * P"@"
 local DocBOL2 = P"---" * owsp * P"|"
@@ -125,7 +130,7 @@ Replace Comment rule with a version that first tries doc lines, and if matched, 
   );
 
   DocFieldLine = Cmt(
-    Cp() * DocBOL * P"field" * wsp * Carg(2) * Visibility * Key * DocId * (owsp * P"#" * owsp * DocId)^-1 * extra * EOL,
+    owsp * Cp() * DocBOL * P"field" * wsp * Carg(2) * Visibility * Key * FieldType * (FieldCmt + Cc(nil)) * EOL,
     function(_, i, pos, cats, key, keyType, fname) return DoDocField(cats, pos, i, key, keyType, fname) end
   );
 
@@ -135,12 +140,12 @@ Replace Comment rule with a version that first tries doc lines, and if matched, 
   );
 
   DocAliasUnionLine = Cmt(
-    Cp() * DocBOL2 * owsp * Carg(2) * C((alnum + S"_.")^1) * (owsp * P"#" * owsp * DocId)^-1 * extra * EOL,
+    owsp * Cp() * DocBOL2 * owsp * Carg(2) * C((alnum + S"_.")^1) * (owsp * P"#" * owsp * DocId)^-1 * extra * EOL,
     function(_, i, pos, cats, value, ename) return DoDocAliasUnion(cats, pos, i, value, ename) end
   );
 
   DocAliasLine = Cmt(
-    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * (wsp * TypeExp)^-1 * extra * EOL,
+    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * (wsp * Alias)^-1 * extra * EOL,
     function(_, i, pos, cats, aname, alias) return DoDocAlias(cats, pos, i, aname, alias) end
   );
 
@@ -182,8 +187,13 @@ local function DoDocField(cats, pos, endpos, key, keyType, fname)
   if not class then return true end
 
   local indexKey = tonumber(key)
+  keyType = keyType:gsub("%s+$", "")
   if indexKey then
-    class.fields[indexKey] = { luaType = keyType, pos = pos, end_pos = endpos, indexName = fname }
+    local fname = cmt and cmt:match("[a-zA-Z_][a-zA-Z0-9_%.]*")
+    if fname and ((#fname > 1 and fname:sub(-1) == ".") or fname == "") then fname = nil end
+    local field = { luaType = keyType, pos = pos, end_pos = endpos }
+    if fname then field.indexName = fname end
+    class.fields[indexKey] = field
     class.validate = class.validate and fname ~= nil
   else
     class.fields[key] = { luaType = keyType, pos = pos, end_pos = endpos }
@@ -228,9 +238,15 @@ end
 
 Parser.parse integration:
 ```lua
-function parser.parse (subject, filename)
+function parser.parse (subject, filename, additionalCATS)
   local errorinfo = { subject = subject, filename = filename }
-  local cats = { classes = {}, aliases = {}, constants = {}, pendingVarReturn = {}, pendingTypes = {} }
+  local cats = {
+    classes = additionalCATS and additionalCATS.classes or {},
+    aliases = additionalCATS and additionalCATS.aliases or {},
+    constants = additionalCATS and additionalCATS.constants or {},
+    pendingVarParams = {},
+    pendingTypes = {}
+  }
   lpeg.setmaxstack(1000)
   local ast, label, errorpos = lpeg.match(G, subject, nil, errorinfo, cats) -- errorinfo as 4th arg is Carg(1), cats as 5th arg is Carg(2)
   cats.currentAlias = nil
@@ -469,13 +485,21 @@ Initialize env.cats at the start of validate (traverse), and cache index lookup:
     ["function"] = {},
     cats = ast.cats or { classes = {}, aliases = {}, constants = {} }
   }
-  for _, c in pairs(env.cats.classes) do
-    c.namedIndexFields = {}
-    for k, f in pairs(c.fields) do
+  local function processClass(class, namedIndexFields)
+    local base = class.base
+    local classBase = base and env.cats.classes[base]
+    if classBase then
+      processClass(classBase, namedIndexFields)
+    end
+    for k, f in pairs(class.fields) do
       if f.indexName then
-        c.namedIndexFields[f.indexName] = k
+        namedIndexFields[f.indexName] = k
       end
     end
+  end
+  for _, c in pairs(env.cats.classes) do
+    c.namedIndexFields = {}
+    processClass(c, c.namedIndexFields)
   end
 ```
 

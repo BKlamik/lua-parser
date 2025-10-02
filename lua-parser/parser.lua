@@ -614,9 +614,15 @@ local validator = require("lua-parser.validator")
 local validate = validator.validate
 local syntaxerror = validator.syntaxerror
 
-function parser.parse (subject, filename)
+function parser.parse (subject, filename, additionalCATS)
   local errorinfo = { subject = subject, filename = filename }
-  local cats = { classes = {}, aliases = {}, constants = {}, pendingVarParams = {}, pendingTypes = {} }
+  local cats = {
+    classes = additionalCATS and additionalCATS.classes or {},
+    aliases = additionalCATS and additionalCATS.aliases or {},
+    constants = additionalCATS and additionalCATS.constants or {},
+    pendingVarParams = {},
+    pendingTypes = {}
+  }
   lpeg.setmaxstack(1000)
   local ast, label, errorpos = lpeg.match(G, subject, nil, errorinfo, cats)
   cats.currentAlias = nil
