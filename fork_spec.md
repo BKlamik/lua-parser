@@ -759,14 +759,14 @@ local p = {[1 --[[F:A:B]]] = 1}
 do
   ---@type C
   local p = {[2 --[[F:C:D]]] = 2}
-  local w = p[ 2 --[[F:C:D]] ] -- should validate against C
+  local w = p[ 2 --[[F:C:D]] ] -- must validate against C
 end
-local x = p[ 1 --[[F:A:B]] ] -- should validate against A
+local x = p[ 1 --[[F:A:B]] ] -- must validate against A
 ```
 
 If `cats.varTypes` is flat, this will fail or misvalidate. With scoped stack, it works correctly.
 
 6) Regressions
 - All existing tests must remain green.
-- Inline F/E/C happy-paths already in your suite should still pass (now with type checks if you add the needed @class/@alias/@enum above them, or keep validation permissive when type not in cats if you want a phased rollout).
+- Inline F/E/C happy-paths already in your suite must still pass (now with type checks if you add the needed @class/@alias/@enum above them, or keep validation permissive when type not in cats if you want a phased rollout).
 
