@@ -481,7 +481,7 @@ local G = { V"Lua",
   );
 
   DocAliasHeaderLine = Cmt(
-    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * owsp * EOL,
+    Cp() * DocBOL * P"alias" * wsp * Carg(2) * DocId * owsp * (FieldCmt + Cc(nil)) * EOL,
     function(_, i, pos, cats, aname, alias) return DoDocAlias(cats, pos, i, aname) end
   );
 
