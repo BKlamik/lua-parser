@@ -7,19 +7,19 @@
 value --[[TYPE:TypeFullName:FieldOrEnumName]]
 
 --- Three examples:
----@class M.Tech.MechValidation
+---@class M.M.Validation
 ---@field [8] number # TotalTons: Total mech weight (Q30.2 fixed point)
 
----@alias M.Mech.Disk.Enum.Twist
+---@alias M.Disk.M.Twist
 ---| 1 # Left
 ---| 2 # Center
 ---| 3 # Right
 
----@alias M.Mech.Disk.CritHit.EquipmentIdMask 0xFF
+---@alias M.Disk.M.CritHit.EquipmentIdMask 0xFF
 
-local totalTons = mechValidation[ 8 --[[F:M.Tech.MechValidation:TotalTons]] ]
-local t = 2 --[[E:M.Mech.Disk.Enum.Twist:Center]]
-local l = bit32.band(eqId, 0xFF --[[C:M.Mech.Disk.CritHit.EquipmentIdMask]])
+local totalTons = mechValidation[ 8 --[[F:M.M.Validation:TotalTons]] ]
+local t = 2 --[[E:M.Disk.M.Twist:Center]]
+local l = bit32.band(eqId, 0xFF --[[C:M.Disk.M.CritHit.EquipmentIdMask]])
 ```
 Where `TYPE` is one of:  
 - **F:** Field reference  
@@ -51,4 +51,4 @@ Where `TYPE` is one of:
 
 **References:**  
 - Lua performance discussion on numeric vs. string keys  
-- Internal type definition examples for `M.Tech.MechValidation`, `M.Mech.Disk.Enum.Twist`, `M.Mech.Disk.CritHit.EquipmentIdMask`  
+- Internal type definition examples for `M.M.Validation`, `M.Disk.M.Twist`, `M.Disk.M.CritHit.EquipmentIdMask`  
