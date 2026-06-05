@@ -7,7 +7,7 @@
 value --[[TYPE:TypeFullName:FieldOrEnumName]]
 
 --- Three examples:
----@class M.M.Validation
+---@class M.M.Val
 ---@field [8] number # TotalTons: Total mech weight (Q30.2 fixed point)
 
 ---@alias M.Disk.M.Twist
@@ -17,7 +17,7 @@ value --[[TYPE:TypeFullName:FieldOrEnumName]]
 
 ---@alias M.Disk.M.CritHit.EquipmentIdMask 0xFF
 
-local totalTons = mechValidation[ 8 --[[F:M.M.Validation:TotalTons]] ]
+local totalTons = mechValidation[ 8 --[[F:M.M.Val:TotalTons]] ]
 local t = 2 --[[E:M.Disk.M.Twist:Center]]
 local l = bit32.band(eqId, 0xFF --[[C:M.Disk.M.CritHit.EquipmentIdMask]])
 ```
@@ -51,4 +51,4 @@ Where `TYPE` is one of:
 
 **References:**  
 - Lua performance discussion on numeric vs. string keys  
-- Internal type definition examples for `M.M.Validation`, `M.Disk.M.Twist`, `M.Disk.M.CritHit.EquipmentIdMask`  
+- Internal type definition examples for `M.M.Val`, `M.Disk.M.Twist`, `M.Disk.M.CritHit.EquipmentIdMask`  
